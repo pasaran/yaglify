@@ -1,0 +1,170 @@
+#!/usr/bin/env node
+
+var esprima = require('esprima');
+var escodegen = require('escodegen');
+
+var fs_ = require('fs');
+
+var filename = process.argv[2];
+if (!filename) {
+    console.log('Usage:');
+    console.log('    yaglify foo.js');
+    console.log('');
+    process.exit(0);
+}
+
+var ast = esprima.parse( fs_.readFileSync(filename) );
+
+/// console.log( JSON.stringify(ast, null, 4) );
+
+//  Заменяем:
+//
+//      r += expr1;
+//      r += expr2;
+//  на:
+//      r += expr1 + expr2;
+//
+//      r = expr1;
+//      r += expr2;
+//  на
+//      r = expr1 + expr2;
+//
+dowalk(ast, function(ast) {
+    //  Ищем выражения в блоках или на верхнем уровне файла.
+    if (ast.type !== 'BlockStatement' && ast.type !== 'Program') {
+        return;
+    }
+
+    var body = ast.body;
+
+    var i = 0;
+    var k = 0;
+    var l = body.length;
+
+    while (i < l) {
+        var current = body[i];
+        var c_name = isAssignment(current);
+
+        //  Если текущий statement это присваивание.
+        if (c_name) {
+
+            //  Смотрим следующие за текущим statement'ы.
+            var j = i + 1;
+            while (j < l) {
+                var next = body[j];
+                var n_name = isAssignment(next);
+
+                //  Если это не присваивание или присваивание другой переменной, идем дальше.
+                if ( !(c_name === n_name && next.expression.operator === '+=') ) {
+                    break;
+                }
+
+                //  Склеиваем два statement'а в одно.
+                current.expression.right = {
+                    type: "BinaryExpression",
+                    operator: "+",
+                    left: current.expression.right,
+                    right: next.expression.right
+                };
+
+                j++;
+            }
+
+            //  Продолжаем дальше с выражения, следующего за склеенной группой.
+            i = j;
+        } else {
+            i++;
+        }
+
+        //  Если мы склеили несколько statement'ов, то нужно избавиться от "дыр".
+        //  Переносим оставшиеся statement'ы (или склеенные группы) к началу массива,
+        //  а `k` указывает на следующее пустое место.
+        if (i !== k) {
+            body[k] = current;
+        }
+        k++;
+    }
+
+    //  Уменьшаем длину массива, чтобы выкинуть лишнее.
+    body.length = k;
+});
+
+//  Склеиваем выражения 'foo' + 'bar' в 'foobar'.
+//
+walkdo(ast, function(ast, parent, pkey) {
+    //  Ищем операции сложения.
+    if ( !(ast.type === 'BinaryExpression' && ast.operator === '+') ) {
+        return;
+    }
+
+    var left = ast.left;
+    var right = ast.right;
+
+    //  Проверяем, что левый и правый операнд являются литералами.
+    if (left.type === 'Literal' && right.type === 'Literal') {
+        //  Заменяем сложение вычисленным литералом.
+        return {
+            type: 'Literal',
+            value: left.value + right.value
+        };
+    }
+});
+
+function isAssignment(ast) {
+    if (ast.type === 'ExpressionStatement') {
+        var expr = ast.expression;
+
+        if (expr.type === 'AssignmentExpression') {
+            return expr.left.name;
+        }
+    }
+}
+
+//  console.error( JSON.stringify(ast, null, 4) );
+
+console.log( escodegen.generate(ast) );
+
+//  ---------------------------------------------------------------------------------------------------------------  //
+
+//  callback(ast, parent, pkey)
+//
+function dowalk(ast, callback, parent, pkey) {
+    var r = callback(ast, parent, pkey);
+
+    if (r === false) { return; }
+
+    if (r) {
+        parent[pkey] = r;
+    }
+
+    for (var key in ast) {
+        if ( ast.hasOwnProperty(key) ) {
+            var child = ast[key];
+            if (child && typeof child === 'object') {
+                dowalk(child, callback, ast, key);
+            }
+        }
+    }
+}
+
+function walkdo(ast, callback, parent, pkey) {
+    for (var key in ast) {
+        if ( ast.hasOwnProperty(key) ) {
+            var child = ast[key];
+            if (child && typeof child === 'object') {
+                walkdo(child, callback, ast, key);
+            }
+        }
+    }
+
+    var r = callback(ast, parent, pkey);
+
+    if (r) {
+        parent[pkey] = r;
+    }
+}
+
+//  ---------------------------------------------------------------------------------------------------------------  //
+
+// vim: set filetype=javascript:
+
