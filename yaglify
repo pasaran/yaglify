@@ -15,7 +15,7 @@ if (!filename) {
 
 var ast = esprima.parse( fs_.readFileSync(filename) );
 
-/// console.log( JSON.stringify(ast, null, 4) );
+//  console.log( JSON.stringify(ast, null, 4) );
 
 //  Заменяем:
 //
@@ -30,44 +30,30 @@ var ast = esprima.parse( fs_.readFileSync(filename) );
 //      r = expr1 + expr2;
 //
 dowalk(ast, function(ast) {
-    //  Ищем выражения в блоках или на верхнем уровне файла.
-    if (ast.type !== 'BlockStatement' && ast.type !== 'Program') {
-        return;
-    }
-
-    var body = ast.body;
+    var body = is_body(ast);
+    if (!body) { return; }
 
     var i = 0;
-    var k = 0;
     var l = body.length;
 
-    while (i < l) {
+    while (i < l - 1) {
         var current = body[i];
-        var c_name = isAssignment(current);
+        var name = is_assignment(current);
 
         //  Если текущий statement это присваивание.
-        if (c_name) {
-
+        if (name) {
             //  Смотрим следующие за текущим statement'ы.
             var j = i + 1;
             while (j < l) {
                 var next = body[j];
-                var n_name = isAssignment(next);
-
-                //  Если это не присваивание или присваивание другой переменной, идем дальше.
-                if ( !(c_name === n_name && next.expression.operator === '+=') ) {
-                    break;
-                }
+                //  Если это не присваивание с += или присваивание другой переменной, идем дальше.
+                if ( name !== is_assignment(next, '+=') ) { break; }
 
                 //  Склеиваем два statement'а в одно.
-                current.expression.right = {
-                    type: "BinaryExpression",
-                    operator: "+",
-                    left: current.expression.right,
-                    right: next.expression.right
-                };
+                current.expression.right = add(current.expression.right, next.expression.right);
 
-                j++;
+                //  "Удаляем" подклеенный statement.
+                body[j++] = null;
             }
 
             //  Продолжаем дальше с выражения, следующего за склеенной группой.
@@ -75,54 +61,184 @@ dowalk(ast, function(ast) {
         } else {
             i++;
         }
-
-        //  Если мы склеили несколько statement'ов, то нужно избавиться от "дыр".
-        //  Переносим оставшиеся statement'ы (или склеенные группы) к началу массива,
-        //  а `k` указывает на следующее пустое место.
-        if (i !== k) {
-            body[k] = current;
-        }
-        k++;
     }
 
-    //  Уменьшаем длину массива, чтобы выкинуть лишнее.
-    body.length = k;
+    //  Удаляем "дыры" из массива.
+    compact(body);
 });
+
+//  Заменяем:
+//
+//      var r = expr1;
+//      r += expr2;
+//  на
+//      var r = expr1 + expr2;
+//
+walkdo(ast, function(ast) {
+    var body = is_body(ast);
+    if (!body) { return; }
+
+    var i = 0;
+    var l = body.length;
+
+    for (var i = 0, l = body.length; i < l - 1; i++) {
+        var defvar = is_var( body[i] );
+        //  Это должно быть var с одной переменной и с инициализацией.
+        if (!defvar || !defvar.init) { continue; }
+
+        //  Имя переменной.
+        var name = defvar.id.name;
+
+        //  Смотрим на следующий statement.
+        var next = body[i + 1];
+        //  Нас интересует присваивание с +=.
+        //  Кроме того, имя переменной должно совпадать с именем переменной в var.
+        if ( is_assignment(next, '+=') !== name ) { continue; }
+
+        //  Заменяем инициализацию переменных на сумму.
+        defvar.init = add(defvar.init, next.expression.right);
+        //  Зануляем присваивание, оно больше не нужно.
+        body[i + 1] = null;
+
+        //  Перескакиваем к следующему за присваиванию statement'у.
+        i += 1;
+    }
+
+    //  Чистим "дыры".
+    compact(body);
+});
+
+//  console.error( JSON.stringify(ast, null, 4) );
+
+//  Заменяем:
+//
+//      (expr + string) + literal
+//  на
+//      expr + (string + literal)
+//
+//  и
+//
+//      literal + (string + expr)
+//  на
+//      (literal + string) + expr
+//
+//  Смысл в том, что literal + string это снова string.
+//
+//  TODO: Нужно делать тоже самое, но с более глубокими деревьями.
+//  По сути, если у нас есть сложение, то нужно взять самый правый лист левого дерева
+//  и самый левый правого. Если они строки, то их можно склеить.
+//
+walkdo(ast, function(ast) {
+    if ( !is_add(ast) ) { return; }
+
+    var left = ast.left;
+    var right = ast.right;
+
+    if ( is_literal(left) && is_add(right) && is_string(right.left) ) {
+        return add(
+            literal(left.value + right.left.value),
+            right.right
+        );
+    }
+
+    if ( is_add(left) && is_string(left.right) && is_literal(right) ) {
+        return add(
+            left.left,
+            literal(left.right.value + right.value)
+        );
+    }
+
+});
+
+//  console.error( JSON.stringify(ast, null, 4) );
+
 
 //  Склеиваем выражения 'foo' + 'bar' в 'foobar'.
 //
-walkdo(ast, function(ast, parent, pkey) {
+walkdo(ast, function(ast) {
     //  Ищем операции сложения.
-    if ( !(ast.type === 'BinaryExpression' && ast.operator === '+') ) {
-        return;
-    }
+    if ( !is_add(ast) ) { return; }
 
     var left = ast.left;
     var right = ast.right;
 
     //  Проверяем, что левый и правый операнд являются литералами.
-    if (left.type === 'Literal' && right.type === 'Literal') {
+    if ( is_literal(left) && is_literal(right) ) {
         //  Заменяем сложение вычисленным литералом.
-        return {
-            type: 'Literal',
-            value: left.value + right.value
-        };
+        return literal(left.value + right.value);
     }
 });
 
-function isAssignment(ast) {
+
+//  console.error( JSON.stringify(ast, null, 4) );
+
+console.log( escodegen.generate(ast) );
+
+//  ---------------------------------------------------------------------------------------------------------------  //
+
+function compact(array) {
+    var m = 0;
+    for (var i = 0, l = array.length; i < l; i++) {
+        var v = array[i];
+        if (v) {
+            array[m++] = v;
+        }
+    }
+    array.length = m;
+}
+
+function is_body(ast) {
+    if (ast.type === 'BlockStatement' || ast.type === 'Program') {
+        return ast.body;
+    }
+}
+
+function is_add(ast) {
+    return (ast.type === 'BinaryExpression' && ast.operator === '+');
+}
+
+function is_literal(ast) {
+    return (ast.type === 'Literal');
+}
+
+function is_string(ast) {
+    return (ast.type === 'Literal' && typeof ast.value === 'string');
+}
+
+function is_assignment(ast, op) {
     if (ast.type === 'ExpressionStatement') {
         var expr = ast.expression;
 
-        if (expr.type === 'AssignmentExpression') {
+        if ( expr.type === 'AssignmentExpression' && (!op || op === expr.operator) ) {
             return expr.left.name;
         }
     }
 }
 
-//  console.error( JSON.stringify(ast, null, 4) );
+function is_var(ast) {
+    if (ast.type === 'VariableDeclaration') {
+        var decls = ast.declarations;
+        if (decls.length === 1) {
+            return decls[0];
+        }
+    }
+}
 
-console.log( escodegen.generate(ast) );
+function add(left, right) {
+    return {
+        type: 'BinaryExpression',
+        operator: '+',
+        left: left,
+        right: right
+    };
+}
+
+function literal(value) {
+    return {
+        type: 'Literal',
+        value: value
+    };
+}
 
 //  ---------------------------------------------------------------------------------------------------------------  //
 
