@@ -6,13 +6,16 @@
     },
     "name": "yaglify",
     "description": "Postprocessor for yate",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "homepage": "https://github.com/pasaran/yaglify",
     "repository": {
         "type": "git",
         "url": "git://github.com/pasaran/yaglify.git"
     },
-    "dependencies": {},
+    "dependencies": {
+        "esprima": "*",
+        "escogen": "*"
+    },
     "devDependencies": {},
     "optionalDependencies": {},
     "engines": {
