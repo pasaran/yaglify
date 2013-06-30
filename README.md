@@ -12,11 +12,9 @@
     r0 += '</span>';
     r0 += '</div>';
 
-    return r0;
-
 Хочется написать некий постпроцессор, который сделает из этого кода такой:
 
-    return '' + closeAttrs(a0) + '<div class="hello"><span class="foo">' + nodeset2xml( selectNametest('hello', c0, []) ) + '</span></div>';
+    var r0 = '' + closeAttrs(a0) + '<div class="hello"><span class="foo">' + nodeset2xml( selectNametest('hello', c0, []) ) + '</span></div>';
 
 К сожалению, существующие компрессоры javascript'а (например, `uglifyjs`) не справляются с этой задачей.
 Например, `uglifyjs` не может оптимизировать `var s = x + 'foo' + 'bar';` до `var s = x + 'foobar';`.
