@@ -36,6 +36,7 @@ dowalk(ast, function(ast) {
     var i = 0;
     var l = body.length;
 
+    var modified = false;
     while (i < l - 1) {
         var current = body[i];
         var name = is_assignment(current);
@@ -54,6 +55,7 @@ dowalk(ast, function(ast) {
 
                 //  "Удаляем" подклеенный statement.
                 body[j++] = null;
+                modified = true;
             }
 
             //  Продолжаем дальше с выражения, следующего за склеенной группой.
@@ -63,8 +65,10 @@ dowalk(ast, function(ast) {
         }
     }
 
-    //  Удаляем "дыры" из массива.
-    compact(body);
+    if (modified) {
+        //  Удаляем "дыры" из массива.
+        compact(body);
+    }
 });
 
 //  Заменяем:
@@ -81,6 +85,7 @@ walkdo(ast, function(ast) {
     var i = 0;
     var l = body.length;
 
+    var modified = false;
     for (var i = 0, l = body.length; i < l - 1; i++) {
         var defvar = is_var( body[i] );
         //  Это должно быть var с одной переменной и с инициализацией.
@@ -99,13 +104,48 @@ walkdo(ast, function(ast) {
         defvar.init = add(defvar.init, next.expression.right);
         //  Зануляем присваивание, оно больше не нужно.
         body[i + 1] = null;
+        modified = true;
 
         //  Перескакиваем к следующему за присваиванию statement'у.
         i += 1;
     }
 
-    //  Чистим "дыры".
-    compact(body);
+    if (modified) {
+        //  Чистим "дыры".
+        compact(body);
+    }
+});
+
+//  console.log( JSON.stringify(ast, null, 4) );
+
+//  Вообще говоря, сложение в javascript'е не ассоциативно.
+//  Но в некоторых случаях таки да.
+//
+//  Например, меняем:
+//
+//      a + ( b + c )
+//  на
+//      ( a + b ) + c
+//
+//  если a и b имеют тип string.
+//  Тип, конечно, вычисляется неточно.
+//  Пока что такой тип имеют строчные литералы и результат сложения,
+//  в котором хотя бы один из аргументов строка.
+//
+dodowalk(ast, function(ast) {
+    if ( !( is_add(ast) && is_type_string(ast.left) && is_add(ast.right) && is_type_string(ast.right.left) ) ) {
+        return;
+    }
+
+    var r = add(
+        add(
+            ast.left,
+            ast.right.left
+        ),
+        ast.right.right
+    );
+
+    return r;
 });
 
 //  console.error( JSON.stringify(ast, null, 4) );
@@ -123,10 +163,6 @@ walkdo(ast, function(ast) {
 //      (literal + string) + expr
 //
 //  Смысл в том, что literal + string это снова string.
-//
-//  TODO: Нужно делать тоже самое, но с более глубокими деревьями.
-//  По сути, если у нас есть сложение, то нужно взять самый правый лист левого дерева
-//  и самый левый правого. Если они строки, то их можно склеить.
 //
 walkdo(ast, function(ast) {
     if ( !is_add(ast) ) { return; }
@@ -150,9 +186,6 @@ walkdo(ast, function(ast) {
 
 });
 
-//  console.error( JSON.stringify(ast, null, 4) );
-
-
 //  Склеиваем выражения 'foo' + 'bar' в 'foobar'.
 //
 walkdo(ast, function(ast) {
@@ -169,8 +202,48 @@ walkdo(ast, function(ast) {
     }
 });
 
+//  Если у нас есть оператор сложения, у которого левый операнд строка,
+//  а правый это тоже оператор сложения такой, что его самые левый лист
+//  это тоже строка, то эти две строки можно склеить.
+//  Тоже самое и для справа.
+//
+//  Например, заменяем
+//
+//      ( x + ( y + ( z + 'foo' ) + 'bar'
+//  на
+//      x + ( y + ( z + 'foobar' )
+//
+dowalk(ast, function(ast) {
+    if ( !is_add(ast) ) { return; }
 
-//  console.error( JSON.stringify(ast, null, 4) );
+    var left = ast.left;
+    var right = ast.right;
+
+    if ( is_string(left) && is_add(right) ) {
+        var t = right;
+        while ( is_add(t.left) ) {
+            t = t.left;
+        }
+        if ( is_string(t.left) ) {
+            t.left = literal(left.value + t.left.value);
+            return right;
+        }
+    }
+
+    if ( is_string(right) && is_add(left) ) {
+        var t = left;
+        while ( is_add(t.right) ) {
+            t = t.right;
+        }
+        if ( is_string(t.right) ) {
+            t.right = literal(t.right.value + right.value);
+            return left;
+        }
+    }
+
+});
+
+//  console.log( JSON.stringify(ast, null, 4) );
 
 console.log( escodegen.generate(ast) );
 
@@ -203,6 +276,16 @@ function is_literal(ast) {
 
 function is_string(ast) {
     return (ast.type === 'Literal' && typeof ast.value === 'string');
+}
+
+function is_type_string(ast) {
+    if ( is_string(ast) ) {
+        return true;
+    }
+
+    if ( is_add(ast) ) {
+        return is_type_string(ast.left) || is_type_string(ast.right);
+    }
 }
 
 function is_assignment(ast, op) {
@@ -242,42 +325,59 @@ function literal(value) {
 
 //  ---------------------------------------------------------------------------------------------------------------  //
 
-//  callback(ast, parent, pkey)
-//
 function dowalk(ast, callback, parent, pkey) {
-    var r = callback(ast, parent, pkey);
-
-    if (r === false) { return; }
-
+    var r = callback(ast);
     if (r) {
         parent[pkey] = r;
+        ast = r;
     }
 
     for (var key in ast) {
-        if ( ast.hasOwnProperty(key) ) {
-            var child = ast[key];
-            if (child && typeof child === 'object') {
-                dowalk(child, callback, ast, key);
-            }
+        var child = ast[key];
+        if (child && typeof child === 'object') {
+            dowalk(child, callback, ast, key);
+        }
+    }
+}
+
+function dodowalk(ast, callback, parent, pkey) {
+    var r = ast;
+    do {
+        r = callback(r);
+
+        if (r) {
+            parent[pkey] = r;
+            ast = r;
+        }
+    } while (r)
+
+    for (var key in ast) {
+        var child = ast[key];
+        if (child && typeof child === 'object') {
+            dodowalk(child, callback, ast, key);
         }
     }
 }
 
 function walkdo(ast, callback, parent, pkey) {
     for (var key in ast) {
-        if ( ast.hasOwnProperty(key) ) {
-            var child = ast[key];
-            if (child && typeof child === 'object') {
-                walkdo(child, callback, ast, key);
-            }
+        var child = ast[key];
+        if (child && typeof child === 'object') {
+            walkdo(child, callback, ast, key);
         }
     }
 
-    var r = callback(ast, parent, pkey);
+    var r = callback(ast);
 
     if (r) {
         parent[pkey] = r;
     }
+}
+
+//  ---------------------------------------------------------------------------------------------------------------  //
+
+function pp(s) {
+    return JSON.stringify(s, null, 4);
 }
 
 //  ---------------------------------------------------------------------------------------------------------------  //
