@@ -31,3 +31,58 @@
 
     yaglify foo.js
 
+## Что умеет делать:
+
+  * Заменяет:
+
+        r += expr1;
+        r += expr2;
+        ...
+        r += exprN;
+
+    на:
+
+        r = r + expr1 + expr2 + ... + exprN;
+
+  * Заменяет:
+
+        r = expr0;
+        r += expr1;
+        r += expr2;
+        ...
+        r += exprN;
+
+    на:
+
+        r = expr0 + expr1 + expr2 + ... + exprN;
+
+  * Заменяет:
+
+        var r = expr0;
+        r += expr1;
+        r += expr2;
+        ...
+        r += exprN;
+
+    на:
+
+        var r = expr0 + expr1 + expr2 + ... + exprN;
+
+  * Заменяет:
+
+        'foo' + 'bar'
+
+    на
+
+        'foobar'
+
+  * Заменяет:
+
+        ( x + ( y + ( z + 'foo' ) + 'bar'
+
+    на
+
+        x + ( y + ( z + 'foobar' )
+
+  * И кое-какие другие оптимизации, связанные с ассоциативностью сложения.
+

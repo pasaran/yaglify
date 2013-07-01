@@ -13,21 +13,44 @@ if (!filename) {
     process.exit(0);
 }
 
-var ast = esprima.parse( fs_.readFileSync(filename) );
+var ast = esprima.parse( fs_.readFileSync(filename, 'utf-8') );
 
 //  console.log( JSON.stringify(ast, null, 4) );
 
-//  Заменяем:
+//  1. Заменяем:
 //
 //      r += expr1;
 //      r += expr2;
-//  на:
-//      r += expr1 + expr2;
+//      ...
+//      r += exprN;
 //
-//      r = expr1;
+//  на:
+//
+//      r = r + expr1 + expr2 + ... + exprN;
+//
+//  2. Заменяем:
+//
+//      r = expr0;
+//      r += expr1;
 //      r += expr2;
-//  на
-//      r = expr1 + expr2;
+//      ...
+//      r += exprN;
+//
+//  на:
+//
+//      r = expr0 + expr1 + expr2 + ... + exprN;
+//
+//  3. Заменяем:
+//
+//      var r = expr0;
+//      r += expr1;
+//      r += expr2;
+//      ...
+//      r += exprN;
+//
+//  на:
+//
+//      var r = expr0 + expr1 + expr2 + ... + exprN;
 //
 dowalk(ast, function(ast) {
     var body = is_body(ast);
@@ -39,79 +62,53 @@ dowalk(ast, function(ast) {
     var modified = false;
     while (i < l - 1) {
         var current = body[i];
-        var name = is_assignment(current);
 
-        //  Если текущий statement это присваивание.
-        if (name) {
-            //  Смотрим следующие за текущим statement'ы.
-            var j = i + 1;
-            while (j < l) {
-                var next = body[j];
-                //  Если это не присваивание с += или присваивание другой переменной, идем дальше.
-                if ( name !== is_assignment(next, '+=') ) { break; }
+        var name = null;
+        var defvar = null;
+        var expr0 = null;
 
-                //  Склеиваем два statement'а в одно.
-                current.expression.right = add(current.expression.right, next.expression.right);
-
-                //  "Удаляем" подклеенный statement.
-                body[j++] = null;
-                modified = true;
-            }
-
-            //  Продолжаем дальше с выражения, следующего за склеенной группой.
-            i = j;
-        } else {
-            i++;
+        if (( name = is_assignment(current) )) {
+            var expr = current.expression;
+            expr0 = (expr.operator === '+=') ? c_add(expr.left, expr.right) : expr.right;
+        } else if (( defvar = is_var(current) )) {
+            name = defvar.id.name;
+            expr0 = defvar.init;
         }
+
+        if (!name) {
+            i++;
+            continue;
+        }
+
+        //  Смотрим следующие за текущим statement'ы.
+        var j = i + 1;
+        var exprs = [];
+        while (j < l) {
+            var next = body[j];
+            //  Если это не присваивание с += или присваивание другой переменной, идем дальше.
+            if ( name !== is_assignment(next, '+=') ) { break; }
+
+            exprs.push(next.expression.right);
+
+            //  "Удаляем" подклеенный statement.
+            body[j++] = null;
+            modified = true;
+        }
+
+        if (exprs.length) {
+            if (defvar) {
+                defvar.init = sum_exprs(expr0, exprs);
+            } else {
+                current.expression.right = sum_exprs(expr0, exprs);
+            }
+        }
+
+        //  Продолжаем дальше с выражения, следующего за склеенной группой.
+        i = j;
     }
 
     if (modified) {
         //  Удаляем "дыры" из массива.
-        compact(body);
-    }
-});
-
-//  Заменяем:
-//
-//      var r = expr1;
-//      r += expr2;
-//  на
-//      var r = expr1 + expr2;
-//
-walkdo(ast, function(ast) {
-    var body = is_body(ast);
-    if (!body) { return; }
-
-    var i = 0;
-    var l = body.length;
-
-    var modified = false;
-    for (var i = 0, l = body.length; i < l - 1; i++) {
-        var defvar = is_var( body[i] );
-        //  Это должно быть var с одной переменной и с инициализацией.
-        if (!defvar || !defvar.init) { continue; }
-
-        //  Имя переменной.
-        var name = defvar.id.name;
-
-        //  Смотрим на следующий statement.
-        var next = body[i + 1];
-        //  Нас интересует присваивание с +=.
-        //  Кроме того, имя переменной должно совпадать с именем переменной в var.
-        if ( is_assignment(next, '+=') !== name ) { continue; }
-
-        //  Заменяем инициализацию переменных на сумму.
-        defvar.init = add(defvar.init, next.expression.right);
-        //  Зануляем присваивание, оно больше не нужно.
-        body[i + 1] = null;
-        modified = true;
-
-        //  Перескакиваем к следующему за присваиванию statement'у.
-        i += 1;
-    }
-
-    if (modified) {
-        //  Чистим "дыры".
         compact(body);
     }
 });
@@ -137,8 +134,8 @@ dodowalk(ast, function(ast) {
         return;
     }
 
-    var r = add(
-        add(
+    var r = c_add(
+        c_add(
             ast.left,
             ast.right.left
         ),
@@ -171,16 +168,16 @@ walkdo(ast, function(ast) {
     var right = ast.right;
 
     if ( is_literal(left) && is_add(right) && is_string(right.left) ) {
-        return add(
-            literal(left.value + right.left.value),
+        return c_add(
+            c_literal(left.value + right.left.value),
             right.right
         );
     }
 
     if ( is_add(left) && is_string(left.right) && is_literal(right) ) {
-        return add(
+        return c_add(
             left.left,
-            literal(left.right.value + right.value)
+            c_literal(left.right.value + right.value)
         );
     }
 
@@ -198,12 +195,12 @@ walkdo(ast, function(ast) {
     //  Проверяем, что левый и правый операнд являются литералами.
     if ( is_literal(left) && is_literal(right) ) {
         //  Заменяем сложение вычисленным литералом.
-        return literal(left.value + right.value);
+        return c_literal(left.value + right.value);
     }
 });
 
 //  Если у нас есть оператор сложения, у которого левый операнд строка,
-//  а правый это тоже оператор сложения такой, что его самые левый лист
+//  а правый это тоже оператор сложения такой, что его самый левый лист
 //  это тоже строка, то эти две строки можно склеить.
 //  Тоже самое и для справа.
 //
@@ -225,7 +222,7 @@ dowalk(ast, function(ast) {
             t = t.left;
         }
         if ( is_string(t.left) ) {
-            t.left = literal(left.value + t.left.value);
+            t.left = c_literal(left.value + t.left.value);
             return right;
         }
     }
@@ -236,7 +233,7 @@ dowalk(ast, function(ast) {
             t = t.right;
         }
         if ( is_string(t.right) ) {
-            t.right = literal(t.right.value + right.value);
+            t.right = c_literal(t.right.value + right.value);
             return left;
         }
     }
@@ -254,11 +251,22 @@ function compact(array) {
     for (var i = 0, l = array.length; i < l; i++) {
         var v = array[i];
         if (v) {
+            //  FIXME: Не всегда нужно копировать.
             array[m++] = v;
         }
     }
     array.length = m;
 }
+
+function sum_exprs(start, exprs) {
+    var r = start;
+    for (var i = 0, l = exprs.length; i < l; i++) {
+        r = c_add( r, exprs[i] );
+    }
+    return r;
+}
+
+//  ---------------------------------------------------------------------------------------------------------------  //
 
 function is_body(ast) {
     if (ast.type === 'BlockStatement' || ast.type === 'Program') {
@@ -307,7 +315,9 @@ function is_var(ast) {
     }
 }
 
-function add(left, right) {
+//  ---------------------------------------------------------------------------------------------------------------  //
+
+function c_add(left, right) {
     return {
         type: 'BinaryExpression',
         operator: '+',
@@ -316,7 +326,7 @@ function add(left, right) {
     };
 }
 
-function literal(value) {
+function c_literal(value) {
     return {
         type: 'Literal',
         value: value
