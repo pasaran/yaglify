@@ -99,6 +99,7 @@ dowalk(ast, function(ast) {
             if (defvar) {
                 defvar.init = sum_exprs(expr0, exprs);
             } else {
+                current.expression.operator = '=';
                 current.expression.right = sum_exprs(expr0, exprs);
             }
         }
