@@ -243,7 +243,11 @@ dowalk(ast, function(ast) {
 
 //  console.log( JSON.stringify(ast, null, 4) );
 
-console.log( escodegen.generate(ast) );
+console.log( escodegen.generate(ast, {
+    format: {
+        escapeless: true
+    }
+}) );
 
 //  ---------------------------------------------------------------------------------------------------------------  //
 
